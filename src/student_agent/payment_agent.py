@@ -519,6 +519,7 @@ async def investigate_payment(
     order: Mapping[str, Any] | None = None,
     order_total_brl: float | None = None,
     issue: str | None = None,
+    emit_policy_event: bool = True,
 ) -> tuple[PaymentFindings, PaymentDecision]:
     """Payment/refund/policy specialist for one resolved order.
 
@@ -558,17 +559,20 @@ async def investigate_payment(
     findings.evidence_by_tool = evidence
     findings.missing_tools = missing
     decision = findings.decide(issue)
-    trace.emit(
-        case_id=case_id,
-        event_type="policy_decided",
-        actor=ACTOR_POLICY,
-        decision_code=(decision.resolution_actions or ["no_policy_rule"])[0],
-        evidence_refs=findings.evidence_refs or None,
-        attributes={
-            "issue": decision.issue,
-            "payment_verdict": decision.payment_analysis["verdict"],
-            "recommended_refund_brl": decision.financial_resolution["recommended_refund_brl"],
-            "ignored_events": findings.view.ignored_events if findings.view else 0,
-        },
-    )
+    if emit_policy_event:
+        trace.emit(
+            case_id=case_id,
+            event_type="policy_decided",
+            actor=ACTOR_POLICY,
+            decision_code=(decision.resolution_actions or ["no_policy_rule"])[0],
+            evidence_refs=findings.evidence_refs or None,
+            attributes={
+                "issue": decision.issue,
+                "payment_verdict": decision.payment_analysis["verdict"],
+                "recommended_refund_brl": decision.financial_resolution[
+                    "recommended_refund_brl"
+                ],
+                "ignored_events": findings.view.ignored_events if findings.view else 0,
+            },
+        )
     return findings, decision

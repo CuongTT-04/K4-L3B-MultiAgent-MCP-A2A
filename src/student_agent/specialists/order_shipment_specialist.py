@@ -498,7 +498,7 @@ class OrderShipmentSpecialist(BaseSpecialist):
                 claim_verdicts[claim["claim_id"]] = verdict
 
         evidence_refs = [ref for refs in evidence_by_domain.values() for ref in refs]
-        if store.trace is not None:
+        if store.trace is not None and task.input_data.get("emit_handoff", True):
             store.trace.emit(
                 case_id=case_id,
                 event_type="handoff",
