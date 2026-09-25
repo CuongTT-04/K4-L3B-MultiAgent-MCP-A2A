@@ -18,8 +18,8 @@ Input → Entity Resolver → Coordinator → Specialists → Conflict Resolver 
 | --- | --- | --- | --- | --- |
 | Entity/customer | TODO | TODO | TODO | TODO |
 | Coordinator | TODO | TODO | TODO | TODO |
-| Order/product | TODO | TODO | TODO | TODO |
-| Shipment | TODO | TODO | TODO | TODO |
+| Order/product (`order_shipment_specialist`) | `AgentTask.input_data`: `case`, `resolved_order_ids` từ `entity_specialist`, `investigation_scope` | Lấy order row, items, sellers, product; dựng `affected_entities` (order/item/seller/shipment ids) | `get_order`, `get_order_items`, `get_sellers` (chỉ khi `seller_delay` hoặc item thiếu seller_id), `get_product_context` (chỉ khi `include_product_context`) | `SpecialistResult.data` → handoff `coordinator` |
+| Shipment (`order_shipment_specialist`) | Order row + `get_shipment_summary`, `opened_at`, `source_precedence` (tùy chọn) từ policy specialist | Verdict (`on_time`/`seller_delay`/`logistics_delay`/`lost`/`returned`/`conflicting`/`insufficient_evidence`), `timeline_complete`, `late_seller_ids`, responsible parties, conflict order↔shipment | `get_shipment_summary` | `shipment_analysis`, `responsible_parties`, `cause_codes`, `data_conflicts`, claim verdict giao hàng; trace `handoff` `SHIPMENT_<VERDICT>` |
 | Payment/refund | TODO | TODO | TODO | TODO |
 | Policy | TODO | TODO | TODO | TODO |
 | Conflict resolver | TODO | TODO | TODO | TODO |
