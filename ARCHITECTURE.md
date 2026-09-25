@@ -40,6 +40,31 @@ Verifier ──verification_completed──► outputs/<case_id>.json        │
 ```
 
 Luồng không cho model tự tạo identifier, evidence, số tiền, action hoặc cause. Khi OpenRouter lỗi hoặc trả giá trị ngoài allow-list, hệ thống dùng synthesis deterministic từ specialist facts.
+Mỗi case chạy tuần tự trong một phiên MCP. CLI (`cli.py`) emit `case_received` / `case_finalized`; mọi bước giữa do coordinator (`coordinator.py`) điều phối.
+
+```text
+input case
+   │ case_received (CLI)
+   ▼
+coordinator ──task_assigned──▶ entity_specialist ──get_order×candidates, get_customer_history──▶ MCP
+   │◀──────────handoff──────────┘   (resolved / ambiguous / not_found)
+   │ resolved?
+   ├─ no ─▶ output bảo thủ: insufficient_evidence / needs_investigation (không gọi specialist khác)
+   └─ yes
+      ├──task_assigned──▶ order_shipment_specialist ──get_order(cache), items, shipment_summary,
+      │◀─────handoff────────┘                           sellers*, product_context*──▶ MCP
+      ├──task_assigned──▶ payment-agent ──get_payment_timeline, get_refund_timeline──▶ MCP
+      │                   policy-agent  ──get_policy──▶ MCP
+      │◀─policy_decided + handoff─┘
+      ▼
+   conflict resolver (conflict.py) ─▶ output builder (output_builder.py)
+      │  LLM synthesis (gpt-4o-mini) chỉ chọn trong tập issue đã có evidence; lỗi ⇒ luật tất định
+      ▼
+   verifier (verifier.py) ──verification_completed──▶ outputs/<case_id>.json
+   │ case_finalized (CLI)
+```
+
+`*` = gọi có điều kiện (xem §2). Trace chỉ chứa sự kiện quan sát được: `task_assigned`, `tool_result_consumed`, `handoff`, `policy_decided`, `verification_completed`.
 
 ## 2. Agent ownership
 
@@ -55,7 +80,7 @@ Luồng không cho model tự tạo identifier, evidence, số tiền, action ho
 | Synthesizer (`OpenRouterSynthesizer`) | Customer claims, specialist facts, allow-list issue/cause và confidence ceiling | Xếp hạng issue/cause bằng structured JSON; không được tạo facts hoặc value ngoài allow-list | Chỉ gọi OpenRouter Chat Completions với model cấu hình | `SynthesisDecision`; lỗi mạng/format/allow-list dùng deterministic fallback |
 | Verifier (`verifier`) | Case gốc, output đã build, tập evidence refs đã thu thập và contracts | Validate schema, case/evidence/entity/refund/confidence/seller/action invariants; fail-fast trước khi finalize | Không gọi MCP hoặc LLM | `VerificationResult`; trace `verification_completed` với `PASSED`/`FAILED` và error count |
 
-Áp dụng least privilege; tool discovery không đồng nghĩa mọi actor đều được gọi mọi tool.
+Áp dụng least privilege: `order_shipment_specialist` từ chối tool ngoài `ALLOWED_TOOLS` (`PermissionError`); payment/policy chỉ gọi 3 tool của mình; coordinator, conflict resolver, verifier và LLM không có quyền gọi MCP.
 
 ## 3. Entity resolution và A2A protocol
 

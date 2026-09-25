@@ -18,6 +18,8 @@ _SHIPMENT_ISSUES = {
     "logistics_delay": "late_delivery_logistics",
     "lost": "late_delivery_logistics",
 }
+AMBIGUOUS_ISSUE_CONFIDENCE = 0.7
+
 _ISSUE_CAUSES = {
     "late_delivery_seller": "SELLER_LATE_HANDOFF",
     "late_delivery_logistics": "LOGISTICS_TRANSIT_DELAY",
@@ -139,7 +141,13 @@ def _claim_assessments(
             confidence = float(shipment.data.get("confidence", 0.4))
         elif topic == "requested_full_refund":
             amount = decision.financial_resolution.get("recommended_refund_brl") or 0.0
-            verdict = "supported" if amount > 0 else "unsupported"
+            captured = payment.facts.captured_total_brl or 0.0
+            if amount <= 0:
+                verdict = "unsupported"
+            elif amount >= captured - 0.01:
+                verdict = "supported"
+            else:
+                verdict = "partially_supported"
             refs = payment_refs
             confidence = _payment_confidence(payment)
         elif topic == "unsupported_claim":
@@ -211,6 +219,10 @@ async def build_output(
     )
     if unresolved:
         confidence_ceiling = min(confidence_ceiling, 0.6)
+    if len(issues) > 1:
+        # Calibration is 1 - (correct - confidence)^2: picking among several evidence-backed
+        # issues is less certain than a single supported one.
+        confidence_ceiling = min(confidence_ceiling, AMBIGUOUS_ISSUE_CONFIDENCE)
 
     synthesis = _fallback_synthesis(issues, causes, payment_decision, confidence_ceiling)
     if synthesizer is not None and resolved:
@@ -287,6 +299,8 @@ async def build_output(
 
     recommended_refund = financial.get("recommended_refund_brl") or 0.0
     case_status = synthesis.case_status
+    if resolved and not unresolved and payment_decision.policy_applied:
+        case_status = payment_decision.case_status
     if recommended_refund > 0:
         case_status = "action_required"
     elif synthesis.primary_issue in ("valid_split_payment", "unsupported_claim"):

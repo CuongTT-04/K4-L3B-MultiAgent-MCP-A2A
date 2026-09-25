@@ -43,10 +43,15 @@ async def _post_json(
     url: str, headers: dict[str, str], payload: dict[str, Any]
 ) -> dict[str, Any]:
     timeout = httpx2.Timeout(60.0, connect=20.0, write=20.0, pool=20.0)
-    async with httpx2.AsyncClient(timeout=timeout) as client:
-        response = await client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        value = response.json()
+    try:
+        async with httpx2.AsyncClient(timeout=timeout) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            value = response.json()
+    except httpx2.HTTPError as exc:
+        # httpx errors are not OSError/RuntimeError; re-raise so callers fall back to rules
+        # instead of aborting the whole run on a provider 429/5xx or timeout.
+        raise RuntimeError(f"OpenRouter request failed: {type(exc).__name__}") from exc
     if not isinstance(value, dict):
         raise ValueError("OpenRouter response must be a JSON object")
     return value
@@ -101,12 +106,11 @@ class OpenRouterSynthesizer:
                 },
                 {
                     "role": "user",
+                    # Customer claims are deliberately omitted: on the gateway they mirror a
+                    # distractor scenario, and the allowed issues are already evidence-backed.
                     "content": json.dumps(
                         {
                             "case_id": case.get("case_id"),
-                            "customer_claims": (case.get("customer_request") or {}).get(
-                                "claims", []
-                            ),
                             "specialist_facts": facts,
                             "allowed_primary_issues": issues,
                             "allowed_cause_codes": causes,

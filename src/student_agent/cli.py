@@ -9,6 +9,7 @@ from pathlib import Path
 from .cases import load_case_set
 from .config import Settings
 from .contracts import Contracts
+from .coordinator import undiscovered_tools
 from .mcp_gateway import connect_gateway
 from .submission import package_submission, validate_artifacts
 from .trace import TraceWriter
@@ -44,6 +45,9 @@ async def _run(root: Path) -> None:
         discovered_tools = await gateway.list_tools()
         if not discovered_tools:
             raise RuntimeError("MCP Gateway returned no tools")
+        missing = undiscovered_tools(discovered_tools)
+        if missing:
+            raise RuntimeError(f"MCP Gateway does not expose required tools: {missing}")
         for case_id in case_set.case_ids:
             case = case_set.cases[case_id]
             trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
