@@ -24,6 +24,27 @@ PaymentInvestigator = Callable[..., Awaitable[tuple[PaymentFindings, PaymentDeci
 
 FATAL_VERIFICATION_CODES = frozenset({"CASE_ID_MISMATCH", "SCHEMA_INVALID"})
 
+# Every tool name the specialists may call; checked against MCP discovery before a run.
+PIPELINE_TOOLS = frozenset(
+    {
+        "get_order",
+        "get_customer_history",
+        "get_order_items",
+        "get_shipment_summary",
+        "get_sellers",
+        "get_product_context",
+        "get_payment_timeline",
+        "get_refund_timeline",
+        "get_order_payments",
+        "get_policy",
+    }
+)
+
+
+def undiscovered_tools(discovered: list[str]) -> list[str]:
+    """Pipeline tools the gateway did not advertise; never call a guessed tool name."""
+    return sorted(PIPELINE_TOOLS - set(discovered))
+
 
 @dataclass(frozen=True)
 class CoordinatorDependencies:

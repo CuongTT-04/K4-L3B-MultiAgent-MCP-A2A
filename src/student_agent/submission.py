@@ -11,7 +11,9 @@ from . import OUTPUT_SCHEMA_VERSION, VARIANT_ID
 from .cases import CaseSet
 from .contracts import Contracts
 
-SECRET_PATTERN = re.compile(r"sk-team-[A-Za-z0-9_-]{8,}")
+SECRET_PATTERN = re.compile(r"sk-(?:team|or)-[A-Za-z0-9_-]{8,}")
+# Refs minted by scripts/mock_mcp.py; submitting them is a fabricated-evidence hard gate.
+SIMULATED_REF_PREFIX = "ev_SIMULATED_"
 MAX_FILE_BYTES = 1024 * 1024
 MAX_SUBMISSION_BYTES = 12 * 1024 * 1024
 
@@ -40,7 +42,7 @@ def build_manifest(case_set: CaseSet) -> dict[str, Any]:
 
 
 def validate_artifacts(
-    root: Path, case_set: CaseSet, contracts: Contracts
+    root: Path, case_set: CaseSet, contracts: Contracts, *, allow_simulated: bool = False
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     outputs_root = root / "outputs"
     actual = {path.stem: path for path in outputs_root.glob("*.json") if path.is_file()}
@@ -81,8 +83,11 @@ def validate_artifacts(
         normalized_lines.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
 
     serialized = [json.dumps(value, ensure_ascii=False) for value in outputs.values()]
-    if SECRET_PATTERN.search("\n".join([*serialized, *normalized_lines])):
-        raise ValueError("a Team API Key appears in output or trace")
+    joined = "\n".join([*serialized, *normalized_lines])
+    if SECRET_PATTERN.search(joined):
+        raise ValueError("an API key appears in output or trace")
+    if not allow_simulated and SIMULATED_REF_PREFIX in joined:
+        raise ValueError("simulated evidence refs found; rerun `day09 run` against the real MCP")
     return outputs, normalized_lines
 
 

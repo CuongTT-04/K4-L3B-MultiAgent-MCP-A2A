@@ -34,3 +34,6 @@ dist/*
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Offline MCP simulation (scripts/mock_mcp.py)
+.sim/

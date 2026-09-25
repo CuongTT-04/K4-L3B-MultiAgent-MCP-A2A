@@ -71,7 +71,8 @@ Chỉ `resolved` mới mở đường cho order/shipment/payment; còn lại out
    - *Shipment:* timestamp đọc từ `get_order` và `get_shipment_summary` theo `source_precedence` (mặc định `get_order` trước); lệch nhau thành conflict order↔shipment.
    - *Claim khách hàng* là cáo buộc, không bao giờ ghi đè dữ kiện MCP; claim cũng không được đưa vào prompt LLM.
 5. **Conflict chưa giải quyết** có `selected_source = null`; builder ép `case_status = needs_investigation` và confidence ≤ 0.60.
-6. **Map evidence vào output.** `evidence_refs` của output = hợp các ref do specialist trả về cho case; mỗi `claim_assessment` chỉ trỏ ref của specialist đã chấm claim đó. Verifier bắt ref lạ bằng `UNKNOWN_EVIDENCE_REF`.
+6. **Map evidence vào output.** `evidence_refs` của output = hợp các ref do specialist trả về cho case; mỗi `claim_assessment` chỉ trỏ ref của specialist đã chấm claim đó. Verifier bắt ref lạ bằng `UNKNOWN_EVIDENCE_REF`. Mỗi ref được trích đều đỡ một field của output: `get_order` → `entity_resolution`; `get_customer_history` → `customer_context`; items/sellers/shipment → `affected_entities`, `shipment_analysis`; product context → phạm vi `include_product_context` của case; payment/refund timeline → `payment_analysis`; policy → `financial_resolution`, `resolution_actions`. Call bị từ chối không có ref nên không bao giờ được trích.
+7. **Không bao giờ tự sinh ref.** Ref chỉ được chép từ response MCP. Bộ giả lập offline `scripts/mock_mcp.py` (dùng để test khi gateway quá tải) sinh ref có tiền tố `ev_SIMULATED_`; `day09 validate` và `day09 package` từ chối mọi artifact chứa tiền tố này, và cũng từ chối artifact chứa API key (`sk-team-…`, `sk-or-…`).
 
 ## 5. Failure and efficiency policy
 
@@ -83,6 +84,8 @@ Chỉ `resolved` mới mở đường cho order/shipment/payment; còn lại out
 | Source conflict | 0 | Chọn source theo policy; không chọn được ⇒ `selected_source = null`, `needs_investigation` | `data_conflicts` trong output |
 | Invalid specialist result | 0 | Coordinator thay bằng kết quả `insufficient_evidence` | `handoff` `FAILED` |
 | LLM lỗi/timeout/ra giá trị ngoài tập cho phép | 0 | Luật tất định chọn issue ưu tiên cao nhất | — |
+
+**Tool discovery.** `day09 run` gọi `list_tools` trước khi chạy case và dừng nếu gateway không công bố đủ `PIPELINE_TOOLS`; không tool nào được gọi theo tên đoán.
 
 **Query budget / cache.** Khoảng 9–10 call mỗi case: entity 2× `get_order` + `get_customer_history`; shipment `get_order_items` + `get_shipment_summary` (+ `get_sellers` khi cần, + `get_product_context` theo scope; `get_order` lấy từ cache); payment 3 call. `get_order_payments` bị bỏ vì `get_payment_timeline` đã chứa payment rows. Cache theo case chặn gọi lặp giữa các specialist; không quét rộng theo khách hàng hay seller.
 
