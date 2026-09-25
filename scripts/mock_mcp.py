@@ -28,6 +28,7 @@ import random
 import secrets
 import shutil
 import sys
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -41,7 +42,11 @@ from student_agent.coordinator import CoordinatorDependencies, coordinate_case
 from student_agent.mcp_gateway import MCPToolError
 from student_agent.payment_agent import investigate_payment
 from student_agent.specialists import EntitySpecialist, OrderShipmentSpecialist
-from student_agent.submission import SIMULATED_REF_PREFIX, validate_artifacts
+from student_agent.submission import (
+    SIMULATED_REF_PREFIX,
+    package_submission,
+    validate_artifacts,
+)
 from student_agent.trace import TraceWriter
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,6 +107,7 @@ PAYMENT_VERDICT = {
     "refund_failed": "refund_failed",
 }
 CLAIM_MATCHES_TRUTH = 0.3  # observed 2 of 7 probed cases
+SIMULATED_CLIENT = "mock-mcp-SIMULATED-DO-NOT-SUBMIT"
 
 
 def _iso(moment: datetime | None) -> str | None:
@@ -431,7 +437,20 @@ async def main() -> None:
     if len(case_ids) == len(case_set.case_ids):
         validate_artifacts(target, case_set, contracts, allow_simulated=True)
         print(f"README format: OK ({len(outputs)} outputs, {len(trace_events)} trace events) "
-              f"-> {target}  [SIMULATED - never package or submit]")
+              f"-> {target}  [SIMULATED - never submit]")
+        # Same packaging code as `day09 package`, clearly marked as a local preview.
+        preview = package_submission(
+            target,
+            target / "dist" / "submission-SIMULATED-DO-NOT-SUBMIT.zip",
+            allow_simulated=True,
+            client_name=SIMULATED_CLIENT,
+        )
+        with zipfile.ZipFile(preview) as archive:
+            manifest = archive.read("manifest.json")
+            names = archive.namelist()
+        (target / "manifest.json").write_bytes(manifest)
+        print(f"Package preview: {len(names)} files ({names[0]}, {names[1]}, "
+              f"{len(names) - 2} outputs) -> {preview}")
     scorecard(worlds, outputs, gateway, trace_events)
 
 

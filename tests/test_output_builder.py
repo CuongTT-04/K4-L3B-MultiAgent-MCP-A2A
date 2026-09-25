@@ -138,7 +138,9 @@ def test_build_output_combines_real_specialist_contracts() -> None:
         {"cause_code": "REFUND_PROCESSING_PENDING", "rank": 2},
     ]
     assert output["claim_assessments"][0]["verdict"] == "supported"
-    assert output["claim_assessments"][1]["verdict"] == "supported"
+    # Financials follow the final primary issue; this fixture has no policy rule for it.
+    assert output["financial_resolution"]["recommended_refund_brl"] == 0.0
+    assert output["claim_assessments"][1]["verdict"] == "unsupported"
 
 
 class FakeSynthesizer:
@@ -176,6 +178,7 @@ def test_build_output_uses_llm_choice_but_caps_confidence() -> None:
         "LOGISTICS_TRANSIT_DELAY"
     )
     assert synthesizer.arguments["facts"] == {
+        "supported_claim_topics": ["late_delivery_logistics"],
         "entity_status": "resolved",
         "entity_confidence": 0.95,
         "claim_verdicts": {"claim-delivery": "supported"},
@@ -272,16 +275,27 @@ def test_financials_follow_the_issue_chosen_by_synthesis() -> None:
 def test_policy_status_is_used_without_synthesis() -> None:
     findings, _ = payment_result()
     findings.policy = POLICY
+    refund_only_case = {
+        "case_id": "L3B_CASE_001",
+        "customer_request": {
+            "claimed_order_id": "order-1",
+            "claims": [{"claim_id": "claim-refund", "topic": "requested_full_refund"}],
+        },
+    }
     output = asyncio.run(
         build_output(
-            CASE, entity_result(), shipment_result(), findings, findings.decide("refund_pending")
+            refund_only_case,
+            entity_result(),
+            shipment_result(),
+            findings,
+            findings.decide("refund_pending"),
         )
     )
 
     assert output["assessment"]["primary_issue"] == "refund_pending"
     assert output["assessment"]["case_status"] == "needs_investigation"
     assert output["resolution_actions"] == ["monitor_refund"]
-    assert output["claim_assessments"][1]["verdict"] == "unsupported"
+    assert output["claim_assessments"][0]["verdict"] == "unsupported"
 
 
 def test_build_output_is_conservative_when_entity_is_not_resolved() -> None:

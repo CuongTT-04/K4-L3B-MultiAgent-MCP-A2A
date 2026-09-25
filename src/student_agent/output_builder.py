@@ -230,6 +230,9 @@ async def build_output(
             synthesis = await synthesizer.synthesize(
                 case=case,
                 facts={
+                    "supported_claim_topics": list(
+                        _supported_claim_topics(case, shipment, payment)
+                    ),
                     "entity_status": entity_resolution.get("status"),
                     "entity_confidence": entity_confidence,
                     "claim_verdicts": shipment.data.get("claim_verdicts") or {},
@@ -277,6 +280,10 @@ async def build_output(
             min(synthesis.confidence, 0.55),
             synthesis.ranked_cause_codes,
         )
+
+    # Money, actions and parties must follow the issue finally chosen, not the pre-synthesis one.
+    if resolved and synthesis.primary_issue != payment_decision.issue:
+        payment_decision = payment.decide(synthesis.primary_issue)
 
     financial = dict(payment_decision.financial_resolution)
     if not resolved:

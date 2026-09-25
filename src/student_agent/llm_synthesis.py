@@ -97,8 +97,9 @@ class OpenRouterSynthesizer:
                     "content": (
                         "Select a case assessment using only the supplied specialist facts and "
                         "allowed values. Do not invent identifiers, evidence, money, actions, or "
-                        "causes. Prefer the topic of a customer claim when its claim-level verdict "
-                        "is supported; otherwise select the strongest verified issue. Treat "
+                        "causes. Prefer an issue listed in specialist_facts.supported_claim_topics "
+                        "(customer claims already confirmed by evidence); otherwise select the "
+                        "strongest verified issue. Treat "
                         "confidence as the probability that primary_issue is correct, not as "
                         "source availability. Return only the requested JSON object without "
                         "reasoning text."
@@ -106,8 +107,9 @@ class OpenRouterSynthesizer:
                 },
                 {
                     "role": "user",
-                    # Customer claims are deliberately omitted: on the gateway they mirror a
-                    # distractor scenario, and the allowed issues are already evidence-backed.
+                    # Raw customer claims are deliberately omitted: on the gateway they mirror a
+                    # distractor scenario. Only evidence-confirmed topics reach the model, via
+                    # specialist_facts.supported_claim_topics.
                     "content": json.dumps(
                         {
                             "case_id": case.get("case_id"),

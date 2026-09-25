@@ -28,7 +28,9 @@ def _json_object(path: Path) -> dict[str, Any]:
     return value
 
 
-def build_manifest(case_set: CaseSet) -> dict[str, Any]:
+def build_manifest(
+    case_set: CaseSet, client_name: str = "day09-student-starter"
+) -> dict[str, Any]:
     return {
         "schema_version": "day09-submission-manifest-v2",
         "competition_id": "day09-multiagent-mcp-a2a",
@@ -37,7 +39,7 @@ def build_manifest(case_set: CaseSet) -> dict[str, Any]:
         "output_schema_version": OUTPUT_SCHEMA_VERSION,
         "trace_schema_version": "day09-trace-event-v1",
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "client": {"name": "day09-student-starter", "version": "0.1.0"},
+        "client": {"name": client_name, "version": "0.1.0"},
     }
 
 
@@ -91,14 +93,23 @@ def validate_artifacts(
     return outputs, normalized_lines
 
 
-def package_submission(root: Path, destination: Path) -> Path:
+def package_submission(
+    root: Path,
+    destination: Path,
+    *,
+    allow_simulated: bool = False,
+    client_name: str = "day09-student-starter",
+) -> Path:
+    """Build the submission ZIP. `allow_simulated` is only for scripts/mock_mcp.py previews."""
     from .cases import load_case_set
 
     root = root.resolve()
     case_set = load_case_set(root)
     contracts = Contracts(root / "contracts" / "schemas")
-    outputs, trace_lines = validate_artifacts(root, case_set, contracts)
-    manifest = build_manifest(case_set)
+    outputs, trace_lines = validate_artifacts(
+        root, case_set, contracts, allow_simulated=allow_simulated
+    )
+    manifest = build_manifest(case_set, client_name)
     contracts.validate_manifest(manifest)
 
     payloads = {
