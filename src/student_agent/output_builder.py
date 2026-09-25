@@ -21,6 +21,8 @@ _SHIPMENT_ISSUES = {
 AMBIGUOUS_ISSUE_CONFIDENCE = 0.7
 
 _ISSUE_CAUSES = {
+    "late_delivery_seller": "SELLER_LATE_HANDOFF",
+    "late_delivery_logistics": "LOGISTICS_TRANSIT_DELAY",
     "canceled_order_paid": "ORDER_CANCELED_AFTER_CAPTURE",
     "unavailable_order_paid": "ORDER_UNAVAILABLE_AFTER_CAPTURE",
     "valid_split_payment": "VALID_SPLIT_PAYMENT",
@@ -48,6 +50,7 @@ def _payment_confidence(findings: PaymentFindings) -> float:
 
 
 def _allowed_issues(
+    case: Mapping[str, Any],
     entity: SpecialistResult,
     shipment: SpecialistResult,
     payment: PaymentFindings,
@@ -66,7 +69,32 @@ def _allowed_issues(
             or payment.facts.captured_total_brl is None
         )
         issues.append("insufficient_evidence" if evidence_is_missing else "unsupported_claim")
+    claim_verdicts = shipment.data.get("claim_verdicts") or {}
+    preferred: list[str] = []
+    for claim in (case.get("customer_request") or {}).get("claims", []):
+        claim_id = claim.get("claim_id")
+        topic = claim.get("topic")
+        supported = claim_verdicts.get(claim_id) == "supported" or topic in payment.issues
+        if supported and topic in issues and topic not in preferred:
+            preferred.append(topic)
+    issues = [*preferred, *(issue for issue in issues if issue not in preferred)]
     return tuple(dict.fromkeys(issues))
+
+
+def _supported_claim_topics(
+    case: Mapping[str, Any],
+    shipment: SpecialistResult,
+    payment: PaymentFindings,
+) -> tuple[str, ...]:
+    claim_verdicts = shipment.data.get("claim_verdicts") or {}
+    topics: list[str] = []
+    for claim in (case.get("customer_request") or {}).get("claims", []):
+        topic = claim.get("topic")
+        if not isinstance(topic, str):
+            continue
+        if claim_verdicts.get(claim.get("claim_id")) == "supported" or topic in payment.issues:
+            topics.append(topic)
+    return tuple(dict.fromkeys(topics))
 
 
 def _cause_codes(issues: Sequence[str], shipment: SpecialistResult) -> tuple[str, ...]:
@@ -182,7 +210,7 @@ async def build_output(
         shipment.data.get("data_conflicts") or [],
     )
     unresolved = has_unresolved_conflict(conflicts)
-    issues = _allowed_issues(entity, shipment, payment)
+    issues = _allowed_issues(case, entity, shipment, payment)
     causes = _cause_codes(issues, shipment)
     entity_confidence = float(entity_resolution.get("confidence", 0.0))
     shipment_confidence = float(shipment.data.get("confidence", 0.4))
@@ -203,9 +231,26 @@ async def build_output(
                 case=case,
                 facts={
                     "entity_status": entity_resolution.get("status"),
+                    "entity_confidence": entity_confidence,
+                    "claim_verdicts": shipment.data.get("claim_verdicts") or {},
                     "shipment_verdict": shipment_analysis.get("verdict"),
+                    "shipment_timeline_complete": shipment_analysis.get(
+                        "timeline_complete"
+                    ),
+                    "shipment_confidence": shipment_confidence,
                     "payment_verdict": payment_decision.payment_analysis.get("verdict"),
                     "payment_issues": payment.issues,
+                    "payment_facts": {
+                        "captured_total_brl": payment.facts.captured_total_brl,
+                        "refunded_total_brl": payment.facts.refunded_total_brl,
+                        "refund_pending_brl": payment.facts.refund_pending_brl,
+                        "refund_failed_brl": payment.facts.refund_failed_brl,
+                        "open_mismatch_brl": payment.facts.open_mismatch_brl,
+                        "repeated_capture_brl": payment.facts.repeated_capture_brl,
+                    },
+                    "recommended_refund_brl": payment_decision.financial_resolution.get(
+                        "recommended_refund_brl"
+                    ),
                     "unresolved_conflict": unresolved,
                 },
                 allowed_issues=issues,
@@ -223,9 +268,15 @@ async def build_output(
         synthesis.ranked_cause_codes,
     )
 
-    # Money, actions and parties must follow the issue finally chosen, not the pre-synthesis one.
-    if resolved and synthesis.primary_issue != payment_decision.issue:
-        payment_decision = payment.decide(synthesis.primary_issue)
+    supported_topics = _supported_claim_topics(case, shipment, payment)
+    if supported_topics and synthesis.primary_issue not in supported_topics:
+        synthesis = SynthesisDecision(
+            synthesis.primary_issue,
+            synthesis.secondary_issues,
+            synthesis.case_status,
+            min(synthesis.confidence, 0.55),
+            synthesis.ranked_cause_codes,
+        )
 
     financial = dict(payment_decision.financial_resolution)
     if not resolved:

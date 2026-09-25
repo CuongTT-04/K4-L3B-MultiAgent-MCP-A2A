@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from ..evidence_store import EvidenceStore
@@ -15,6 +16,8 @@ from ..models import (
 from .base import BaseSpecialist
 
 logger = logging.getLogger(__name__)
+
+_PLACEHOLDER_CANDIDATE = re.compile(r"^candidate-\d+$", re.IGNORECASE)
 
 
 class EntitySpecialist(BaseSpecialist):
@@ -52,6 +55,10 @@ class EntitySpecialist(BaseSpecialist):
 
         # 1. Probe each candidate order using get_order
         for cand_id in candidates_to_check:
+            if _PLACEHOLDER_CANDIDATE.fullmatch(cand_id):
+                rejected_candidates.append(cand_id)
+                notes.append(f"Candidate {cand_id} rejected as a synthetic placeholder")
+                continue
             try:
                 evidence = await store.get_order(
                     case_id=case_id, order_id=cand_id, actor=self.actor_name

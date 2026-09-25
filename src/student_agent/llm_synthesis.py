@@ -97,7 +97,11 @@ class OpenRouterSynthesizer:
                     "content": (
                         "Select a case assessment using only the supplied specialist facts and "
                         "allowed values. Do not invent identifiers, evidence, money, actions, or "
-                        "causes. Return only the requested JSON object without reasoning text."
+                        "causes. Prefer the topic of a customer claim when its claim-level verdict "
+                        "is supported; otherwise select the strongest verified issue. Treat "
+                        "confidence as the probability that primary_issue is correct, not as "
+                        "source availability. Return only the requested JSON object without "
+                        "reasoning text."
                     ),
                 },
                 {
