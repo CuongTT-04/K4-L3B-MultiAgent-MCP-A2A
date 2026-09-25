@@ -2,7 +2,7 @@
 
 Owns: affected entities (order/item/seller/shipment ids), shipment verdict, timeline
 completeness and seller/logistics responsibility. Payment references are left to the
-payment agent.
+payment specialist.
 
 The MCP ``data`` payload has no published schema, so field lookup accepts the Olist
 column names plus a few common aliases. Missing evidence never becomes a guess: it
@@ -17,10 +17,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ..trace import TraceWriter
-from .base import EvidenceCache, ScopedToolClient, ToolGateway
+from ..evidence_store import EvidenceStore
+from ..models import AgentTask, SpecialistResult, TaskStatus
+from .base import BaseSpecialist
 
-ACTOR = "order-shipment-agent"
 ALLOWED_TOOLS = frozenset(
     {"get_order", "get_order_items", "get_product_context", "get_sellers", "get_shipment_summary"}
 )
@@ -363,20 +363,6 @@ def assess_delivery_claim(topic: str, verdict: str) -> str | None:
 # --------------------------------------------------------------------------- agent
 
 
-@dataclass
-class OrderShipmentFindings:
-    affected_entities: dict[str, list[str]]
-    shipment_analysis: dict[str, Any]
-    responsible_parties: list[dict[str, Any]]
-    cause_codes: list[str]
-    data_conflicts: list[dict[str, Any]]
-    claim_verdicts: dict[str, str]
-    evidence_refs: list[str]
-    evidence_by_domain: dict[str, list[str]]
-    confidence: float
-    failed_orders: list[str]
-
-
 def _merge(assessments: list[ShipmentAssessment]) -> ShipmentAssessment:
     if not assessments:
         return ShipmentAssessment("insufficient_evidence", [], False, [], [], [])
@@ -409,126 +395,144 @@ def _confidence(assessment: ShipmentAssessment, failed: bool) -> float:
     return score - 0.1 if assessment.conflicts else score
 
 
-async def investigate(
-    case: dict[str, Any],
-    order_ids: list[str],
-    gateway: ToolGateway,
-    trace: TraceWriter,
-    *,
-    cache: EvidenceCache | None = None,
-    source_precedence: tuple[str, ...] | None = None,
-) -> OrderShipmentFindings:
-    """Investigate resolved orders and hand findings back to the coordinator.
+class OrderShipmentSpecialist(BaseSpecialist):
+    """Person 2 Domain Specialist: order/items/product/sellers and shipment timeline.
 
-    ``order_ids`` must come from entity resolution (never raw candidates). Pass the
-    per-case ``cache`` shared with other agents so a ``get_order`` already made by the
-    entity agent is not repeated. ``source_precedence`` comes from the policy agent,
-    e.g. ``("get_shipment_summary", "get_order")``.
+    Expects ``task.input_data`` = ``{"case": case, "resolved_order_ids": [...]}`` and
+    optionally ``"source_precedence"`` from the policy specialist, e.g.
+    ``["get_shipment_summary", "get_order"]``. Only ``ALLOWED_TOOLS`` are ever called.
     """
-    case_id = case["case_id"]
-    client = ScopedToolClient(
-        gateway, trace, case_id=case_id, actor=ACTOR, allowed_tools=ALLOWED_TOOLS, cache=cache
-    )
-    scope = case.get("investigation_scope") or {}
-    opened_at = parse_ts(case.get("opened_at"))
 
-    evidence_by_domain: dict[str, list[str]] = {}
+    def __init__(self, actor_name: str = "order_shipment_specialist") -> None:
+        super().__init__(actor_name=actor_name)
 
-    def keep(evidence: dict[str, Any]) -> Any:
-        refs = evidence_by_domain.setdefault(evidence["domain"], [])
-        if evidence["evidence_ref"] not in refs:
-            refs.append(evidence["evidence_ref"])
-        return evidence["data"]
+    async def _call(
+        self, store: EvidenceStore, tool_name: str, case_id: str, order_id: str
+    ) -> dict[str, Any]:
+        if tool_name not in ALLOWED_TOOLS:
+            raise PermissionError(f"{self.actor_name} is not allowed to call {tool_name}")
+        return await store.call_tool_safe(
+            tool_name, case_id=case_id, actor=self.actor_name, order_id=order_id
+        )
 
-    entities: dict[str, list[str]] = {
-        "order_ids": [],
-        "item_ids": [],
-        "seller_ids": [],
-        "payment_references": [],
-        "shipment_ids": [],
-    }
+    async def execute(self, task: AgentTask, store: EvidenceStore) -> SpecialistResult:
+        case_id = task.case_id
+        case = task.input_data.get("case") or {}
+        order_ids = list(dict.fromkeys(task.input_data.get("resolved_order_ids") or []))
+        precedence = task.input_data.get("source_precedence")
+        source_precedence = tuple(precedence) if precedence else None
+        scope = case.get("investigation_scope") or {}
+        opened_at = parse_ts(case.get("opened_at"))
 
-    def add(kind: str, value: Any) -> None:
-        if value is not None and str(value) not in entities[kind]:
-            entities[kind].append(str(value))
+        evidence_by_domain: dict[str, list[str]] = {}
 
-    assessments: list[ShipmentAssessment] = []
-    failed: list[str] = []
-    for order_id in order_ids:
-        try:
-            order_ev, items_ev, ship_ev = await asyncio.gather(
-                client.call("get_order", order_id=order_id),
-                client.call("get_order_items", order_id=order_id),
-                client.call("get_shipment_summary", order_id=order_id),
+        def keep(evidence: dict[str, Any]) -> Any:
+            refs = evidence_by_domain.setdefault(evidence["domain"], [])
+            if evidence["evidence_ref"] not in refs:
+                refs.append(evidence["evidence_ref"])
+            return evidence["data"]
+
+        entities: dict[str, list[str]] = {
+            "order_ids": [],
+            "item_ids": [],
+            "seller_ids": [],
+            "payment_references": [],
+            "shipment_ids": [],
+        }
+
+        def add(kind: str, value: Any) -> None:
+            if value is not None and str(value) not in entities[kind]:
+                entities[kind].append(str(value))
+
+        assessments: list[ShipmentAssessment] = []
+        errors: list[str] = []
+        warnings: list[str] = []
+        if not order_ids:
+            warnings.append("no resolved_order_ids; shipment verdict is insufficient_evidence")
+        for order_id in order_ids:
+            try:
+                order_ev, items_ev, ship_ev = await asyncio.gather(
+                    self._call(store, "get_order", case_id, order_id),
+                    self._call(store, "get_order_items", case_id, order_id),
+                    self._call(store, "get_shipment_summary", case_id, order_id),
+                )
+            except RuntimeError as exc:
+                errors.append(f"order {order_id}: {exc}")
+                continue
+            view = OrderShipmentView(
+                order_id=order_id,
+                order=_single(keep(order_ev), "order"),
+                items=_records(keep(items_ev), "items", "order_items", "rows"),
+                shipment=_single(keep(ship_ev), "shipment", "summary"),
             )
-        except RuntimeError:
-            failed.append(order_id)
-            continue
-        view = OrderShipmentView(
-            order_id=order_id,
-            order=_single(keep(order_ev), "order"),
-            items=_records(keep(items_ev), "items", "order_items", "rows"),
-            shipment=_single(keep(ship_ev), "shipment", "summary"),
+            assessment = assess_order(
+                view, opened_at=opened_at, source_precedence=source_precedence
+            )
+
+            # Seller records only when they back a responsibility claim or ids are missing.
+            needs_sellers = assessment.verdict == "seller_delay" or not any(
+                _get(item, _SELLER_ID) for item in view.items
+            )
+            if needs_sellers:
+                with contextlib.suppress(RuntimeError):
+                    sellers_ev = await self._call(store, "get_sellers", case_id, order_id)
+                    view.sellers = _records(keep(sellers_ev), "sellers", "rows")
+            if scope.get("include_product_context"):
+                with contextlib.suppress(RuntimeError):
+                    keep(await self._call(store, "get_product_context", case_id, order_id))
+
+            add("order_ids", order_id)
+            for item in view.items:
+                add("item_ids", _item_id(order_id, item))
+                add("seller_ids", _get(item, _SELLER_ID))
+            for seller in view.sellers:
+                add("seller_ids", _get(seller, _SELLER_ID))
+            add("shipment_ids", _get(view.shipment, ("shipment_id", "tracking_id")))
+            assessments.append(assessment)
+
+        merged = _merge(assessments)
+        claim_verdicts: dict[str, str] = {}
+        for claim in (case.get("customer_request") or {}).get("claims", []):
+            verdict = assess_delivery_claim(claim.get("topic", ""), merged.verdict)
+            if verdict is not None:
+                claim_verdicts[claim["claim_id"]] = verdict
+
+        evidence_refs = [ref for refs in evidence_by_domain.values() for ref in refs]
+        if store.trace is not None:
+            store.trace.emit(
+                case_id=case_id,
+                event_type="handoff",
+                actor=self.actor_name,
+                target="coordinator",
+                decision_code=f"SHIPMENT_{merged.verdict.upper()}",
+                evidence_refs=evidence_refs[:20],
+                attributes={
+                    "timeline_complete": merged.timeline_complete,
+                    "late_seller_count": len(merged.late_seller_ids),
+                    "conflict_count": len(merged.conflicts),
+                    "failed_order_count": len(errors),
+                },
+            )
+        return SpecialistResult(
+            task_id=task.task_id,
+            case_id=case_id,
+            actor=self.actor_name,
+            status=TaskStatus.FAILED if order_ids and not assessments else TaskStatus.COMPLETED,
+            evidence_refs=evidence_refs,
+            data={
+                "affected_entities": {key: value[:20] for key, value in entities.items()},
+                "shipment_analysis": {
+                    "verdict": merged.verdict,
+                    "late_seller_ids": merged.late_seller_ids[:20],
+                    "timeline_complete": merged.timeline_complete,
+                },
+                "responsible_parties": merged.responsible_parties,
+                "cause_codes": merged.cause_codes,
+                "data_conflicts": merged.conflicts,
+                "claim_verdicts": claim_verdicts,
+                "evidence_by_domain": evidence_by_domain,
+                "confidence": _confidence(merged, bool(errors)),
+            },
+            errors=errors,
+            warnings=warnings,
         )
-        assessment = assess_order(view, opened_at=opened_at, source_precedence=source_precedence)
-
-        # Seller records only when they back a responsibility claim or ids are missing.
-        needs_sellers = assessment.verdict == "seller_delay" or not any(
-            _get(item, _SELLER_ID) for item in view.items
-        )
-        if needs_sellers:
-            with contextlib.suppress(RuntimeError):
-                sellers_ev = await client.call("get_sellers", order_id=order_id)
-                view.sellers = _records(keep(sellers_ev), "sellers", "rows")
-        if scope.get("include_product_context"):
-            with contextlib.suppress(RuntimeError):
-                keep(await client.call("get_product_context", order_id=order_id))
-
-        add("order_ids", order_id)
-        for item in view.items:
-            add("item_ids", _item_id(order_id, item))
-            add("seller_ids", _get(item, _SELLER_ID))
-        for seller in view.sellers:
-            add("seller_ids", _get(seller, _SELLER_ID))
-        add("shipment_ids", _get(view.shipment, ("shipment_id", "tracking_id")))
-        assessments.append(assessment)
-
-    merged = _merge(assessments)
-    claim_verdicts: dict[str, str] = {}
-    for claim in (case.get("customer_request") or {}).get("claims", []):
-        verdict = assess_delivery_claim(claim.get("topic", ""), merged.verdict)
-        if verdict is not None:
-            claim_verdicts[claim["claim_id"]] = verdict
-
-    evidence_refs = [ref for refs in evidence_by_domain.values() for ref in refs]
-    findings = OrderShipmentFindings(
-        affected_entities={key: value[:20] for key, value in entities.items()},
-        shipment_analysis={
-            "verdict": merged.verdict,
-            "late_seller_ids": merged.late_seller_ids[:20],
-            "timeline_complete": merged.timeline_complete,
-        },
-        responsible_parties=merged.responsible_parties,
-        cause_codes=merged.cause_codes,
-        data_conflicts=merged.conflicts,
-        claim_verdicts=claim_verdicts,
-        evidence_refs=evidence_refs,
-        evidence_by_domain=evidence_by_domain,
-        confidence=_confidence(merged, bool(failed)),
-        failed_orders=failed,
-    )
-    trace.emit(
-        case_id=case_id,
-        event_type="handoff",
-        actor=ACTOR,
-        target="coordinator",
-        decision_code=f"SHIPMENT_{merged.verdict.upper()}",
-        evidence_refs=evidence_refs[:20],
-        attributes={
-            "timeline_complete": merged.timeline_complete,
-            "late_seller_count": len(merged.late_seller_ids),
-            "conflict_count": len(merged.conflicts),
-            "failed_order_count": len(failed),
-        },
-    )
-    return findings

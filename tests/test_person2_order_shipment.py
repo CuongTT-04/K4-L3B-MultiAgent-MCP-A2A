@@ -9,15 +9,18 @@ from typing import Any
 
 import pytest
 
-from student_agent.agents.order_shipment import (
+from student_agent import evidence_store
+from student_agent.contracts import Contracts
+from student_agent.evidence_store import EvidenceStore
+from student_agent.models import AgentTask, SpecialistResult, TaskStatus, TaskType
+from student_agent.specialists.order_shipment_specialist import (
     ALLOWED_TOOLS,
+    OrderShipmentSpecialist,
     OrderShipmentView,
     assess_delivery_claim,
     assess_order,
-    investigate,
     parse_ts,
 )
-from student_agent.contracts import Contracts
 from student_agent.trace import TraceWriter
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -249,45 +252,62 @@ def read_trace(trace: TraceWriter) -> list[dict[str, Any]]:
     return [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_investigate_seller_delay_end_to_end(trace: TraceWriter) -> None:
+def run_specialist(
+    store: EvidenceStore, case: dict[str, Any], order_ids: list[str]
+) -> SpecialistResult:
+    task = AgentTask(
+        task_id="task_shipment_L3B_CASE_001",
+        case_id=case["case_id"],
+        assigned_to="order_shipment_specialist",
+        task_type=TaskType.INVESTIGATE_ORDER_SHIPMENT,
+        input_data={"case": case, "resolved_order_ids": order_ids},
+    )
+    return asyncio.run(OrderShipmentSpecialist().execute(task, store))
+
+
+def test_specialist_seller_delay_end_to_end(trace: TraceWriter) -> None:
     order = order_row(
         order_delivered_carrier_date="2018-01-08 10:00:00",
         order_delivered_customer_date="2018-01-25 10:00:00",
     )
     gateway = FakeGateway(gateway_data(order))
-    findings = asyncio.run(investigate(make_case(), [ORDER_ID], gateway, trace))
+    store = EvidenceStore(gateway=gateway, trace=trace)
+    result = run_specialist(store, make_case(), [ORDER_ID])
 
-    assert findings.shipment_analysis == {
+    assert result.status == TaskStatus.COMPLETED
+    assert result.actor == "order_shipment_specialist"
+    assert result.data["shipment_analysis"] == {
         "verdict": "seller_delay",
         "late_seller_ids": ["seller-a"],
         "timeline_complete": True,
     }
-    assert findings.affected_entities == {
+    assert result.data["affected_entities"] == {
         "order_ids": [ORDER_ID],
         "item_ids": [f"{ORDER_ID}:1", f"{ORDER_ID}:2"],
         "seller_ids": ["seller-a", "seller-b"],
         "payment_references": [],
         "shipment_ids": ["shp-1"],
     }
-    assert findings.claim_verdicts == {"claim-001-a": "supported"}
+    assert result.data["claim_verdicts"] == {"claim-001-a": "supported"}
     assert {tool for tool, _, _ in gateway.calls} == ALLOWED_TOOLS
     assert all(case_id == "L3B_CASE_001" for _, case_id, _ in gateway.calls)
+    assert set(result.evidence_refs) == set(store.get_case_evidence_refs("L3B_CASE_001"))
 
     events = read_trace(trace)
     consumed = [e for e in events if e["event_type"] == "tool_result_consumed"]
     assert len(consumed) == 5
-    assert {ref for e in consumed for ref in e["evidence_refs"]} == set(findings.evidence_refs)
+    assert all(e["actor"] == "order_shipment_specialist" for e in consumed)
     assert events[-1]["event_type"] == "handoff"
     assert events[-1]["target"] == "coordinator"
     assert events[-1]["decision_code"] == "SHIPMENT_SELLER_DELAY"
 
 
-def test_investigate_skips_optional_tools_when_not_needed(trace: TraceWriter) -> None:
+def test_specialist_skips_optional_tools_when_not_needed(trace: TraceWriter) -> None:
     gateway = FakeGateway(gateway_data(order_row()))
-    case = make_case(include_product_context=False)
-    findings = asyncio.run(investigate(case, [ORDER_ID], gateway, trace))
-    assert findings.shipment_analysis["verdict"] == "on_time"
-    assert findings.claim_verdicts == {"claim-001-a": "unsupported"}
+    store = EvidenceStore(gateway=gateway, trace=trace)
+    result = run_specialist(store, make_case(include_product_context=False), [ORDER_ID])
+    assert result.data["shipment_analysis"]["verdict"] == "on_time"
+    assert result.data["claim_verdicts"] == {"claim-001-a": "unsupported"}
     assert {tool for tool, _, _ in gateway.calls} == {
         "get_order",
         "get_order_items",
@@ -295,23 +315,39 @@ def test_investigate_skips_optional_tools_when_not_needed(trace: TraceWriter) ->
     }
 
 
-def test_shared_cache_prevents_duplicate_calls(trace: TraceWriter) -> None:
+def test_get_order_from_entity_specialist_is_not_repeated(trace: TraceWriter) -> None:
     gateway = FakeGateway(gateway_data(order_row()))
-    cache: dict = {}
-    case = make_case(include_product_context=False)
-    asyncio.run(investigate(case, [ORDER_ID], gateway, trace, cache=cache))
-    asyncio.run(investigate(case, [ORDER_ID], gateway, trace, cache=cache))
+    store = EvidenceStore(gateway=gateway, trace=trace)
+    asyncio.run(store.get_order(case_id="L3B_CASE_001", order_id=ORDER_ID))
+    run_specialist(store, make_case(include_product_context=False), [ORDER_ID])
+    assert [tool for tool, _, _ in gateway.calls].count("get_order") == 1
     assert len(gateway.calls) == 3
 
 
-def test_missing_order_degrades_to_insufficient_evidence(trace: TraceWriter) -> None:
+def test_missing_order_degrades_to_insufficient_evidence(
+    trace: TraceWriter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(evidence_store.asyncio, "sleep", no_sleep)
     gateway = FakeGateway(gateway_data(order_row()), failing={"get_order"})
-    findings = asyncio.run(investigate(make_case(), [ORDER_ID], gateway, trace))
-    assert findings.shipment_analysis == {
+    store = EvidenceStore(gateway=gateway, trace=trace)
+    result = run_specialist(store, make_case(), [ORDER_ID])
+    assert result.status == TaskStatus.FAILED
+    assert result.data["shipment_analysis"] == {
         "verdict": "insufficient_evidence",
         "late_seller_ids": [],
         "timeline_complete": False,
     }
-    assert findings.failed_orders == [ORDER_ID]
-    assert findings.affected_entities["order_ids"] == []
-    assert findings.confidence <= 0.5
+    assert result.data["affected_entities"]["order_ids"] == []
+    assert result.data["confidence"] <= 0.5
+    assert result.errors
+
+
+def test_no_resolved_orders_makes_no_calls(trace: TraceWriter) -> None:
+    gateway = FakeGateway(gateway_data(order_row()))
+    result = run_specialist(EvidenceStore(gateway=gateway, trace=trace), make_case(), [])
+    assert gateway.calls == []
+    assert result.data["shipment_analysis"]["verdict"] == "insufficient_evidence"
+    assert result.warnings
