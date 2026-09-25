@@ -127,22 +127,26 @@ def test_build_output_combines_real_specialist_contracts() -> None:
 
     contracts().validate_output(output, "test output")
     assert output["assessment"] == {
-        "primary_issue": "refund_pending",
-        "secondary_issues": ["late_delivery_logistics"],
+        "primary_issue": "late_delivery_logistics",
+        "secondary_issues": ["refund_pending"],
         "case_status": "action_required",
         "confidence": 0.85,
     }
     assert output["evidence_refs"] == [ENTITY_EV, SHIPMENT_EV, PAYMENT_EV, POLICY_EV]
     assert output["root_cause_analysis"]["ranked_causes"] == [
-        {"cause_code": "REFUND_PROCESSING_PENDING", "rank": 1},
-        {"cause_code": "LOGISTICS_TRANSIT_DELAY", "rank": 2},
+        {"cause_code": "LOGISTICS_TRANSIT_DELAY", "rank": 1},
+        {"cause_code": "REFUND_PROCESSING_PENDING", "rank": 2},
     ]
     assert output["claim_assessments"][0]["verdict"] == "supported"
     assert output["claim_assessments"][1]["verdict"] == "supported"
 
 
 class FakeSynthesizer:
-    async def synthesize(self, **_: object) -> SynthesisDecision:
+    def __init__(self) -> None:
+        self.arguments: dict[str, object] = {}
+
+    async def synthesize(self, **kwargs: object) -> SynthesisDecision:
+        self.arguments = kwargs
         return SynthesisDecision(
             primary_issue="late_delivery_logistics",
             secondary_issues=("refund_pending",),
@@ -154,6 +158,7 @@ class FakeSynthesizer:
 
 def test_build_output_uses_llm_choice_but_caps_confidence() -> None:
     findings, decision = payment_result()
+    synthesizer = FakeSynthesizer()
     output = asyncio.run(
         build_output(
             CASE,
@@ -161,7 +166,7 @@ def test_build_output_uses_llm_choice_but_caps_confidence() -> None:
             shipment_result(),
             findings,
             decision,
-            synthesizer=FakeSynthesizer(),
+            synthesizer=synthesizer,
         )
     )
 
@@ -170,6 +175,55 @@ def test_build_output_uses_llm_choice_but_caps_confidence() -> None:
     assert output["root_cause_analysis"]["ranked_causes"][0]["cause_code"] == (
         "LOGISTICS_TRANSIT_DELAY"
     )
+    assert synthesizer.arguments["facts"] == {
+        "entity_status": "resolved",
+        "entity_confidence": 0.95,
+        "claim_verdicts": {"claim-delivery": "supported"},
+        "shipment_verdict": "logistics_delay",
+        "shipment_timeline_complete": True,
+        "shipment_confidence": 0.85,
+        "payment_verdict": "refund_pending",
+        "payment_issues": ["refund_pending"],
+        "payment_facts": {
+            "captured_total_brl": 100.0,
+            "refunded_total_brl": 0.0,
+            "refund_pending_brl": 100.0,
+            "refund_failed_brl": 0.0,
+            "open_mismatch_brl": 0.0,
+            "repeated_capture_brl": 0.0,
+        },
+        "recommended_refund_brl": 100.0,
+        "unresolved_conflict": False,
+    }
+
+
+class OverconfidentUnclaimedIssueSynthesizer:
+    async def synthesize(self, **_: object) -> SynthesisDecision:
+        return SynthesisDecision(
+            primary_issue="refund_pending",
+            secondary_issues=("late_delivery_logistics",),
+            case_status="action_required",
+            confidence=0.99,
+            ranked_cause_codes=("REFUND_PROCESSING_PENDING",),
+        )
+
+
+def test_build_output_caps_confidence_when_primary_differs_from_supported_claim() -> None:
+    findings, decision = payment_result()
+
+    output = asyncio.run(
+        build_output(
+            CASE,
+            entity_result(),
+            shipment_result(),
+            findings,
+            decision,
+            synthesizer=OverconfidentUnclaimedIssueSynthesizer(),
+        )
+    )
+
+    assert output["assessment"]["primary_issue"] == "refund_pending"
+    assert output["assessment"]["confidence"] == 0.55
 
 
 def test_build_output_is_conservative_when_entity_is_not_resolved() -> None:

@@ -169,3 +169,61 @@ def test_entity_specialist_resolution_and_ranking() -> None:
     import asyncio
     asyncio.run(_run())
 
+
+def test_entity_specialist_rejects_placeholder_without_mcp_call() -> None:
+    """A synthetic candidate marker must not consume the audited MCP call budget."""
+
+    async def _run() -> None:
+        calls: list[tuple[str, dict[str, str]]] = []
+
+        async def fake_call(
+            tool_name: str, *, case_id: str, **arguments: str
+        ) -> dict[str, Any]:
+            calls.append((tool_name, arguments))
+            if tool_name == "get_order":
+                return {
+                    "schema_version": "day09-mcp-evidence-v1",
+                    "evidence_ref": "ev_order_123456789012345678901234",
+                    "result_hash": "sha256:" + "e" * 64,
+                    "domain": "order",
+                    "data": {
+                        "order_id": arguments["order_id"],
+                        "customer_unique_id": "customer-target-001",
+                    },
+                }
+            return {
+                "schema_version": "day09-mcp-evidence-v1",
+                "evidence_ref": "ev_customer_123456789012345678901",
+                "result_hash": "sha256:" + "f" * 64,
+                "domain": "customer",
+                "data": {"order_ids": ["real-order-1"]},
+            }
+
+        gateway = AsyncMock()
+        gateway.call = AsyncMock(side_effect=fake_call)
+        task = AgentTask(
+            task_id="task_entity_budget",
+            case_id="L3B_CASE_001",
+            assigned_to="entity_specialist",
+            task_type=TaskType.RESOLVE_ENTITY,
+            input_data={
+                "customer_request": {"claimed_order_id": "real-order-1"},
+                "candidate_order_ids": ["real-order-1", "candidate-001"],
+                "customer_unique_id_hint": "customer-target-001",
+            },
+        )
+
+        result = await EntitySpecialist().execute(
+            task, EvidenceStore(gateway=gateway, trace=None)
+        )
+
+        order_calls = [args["order_id"] for tool, args in calls if tool == "get_order"]
+        assert order_calls == ["real-order-1"]
+        assert result.data["entity_resolution"]["rejected_candidates"] == [
+            "candidate-001"
+        ]
+
+    import asyncio
+
+    asyncio.run(_run())
+
