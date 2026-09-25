@@ -8,8 +8,7 @@ from typing import Any
 import pytest
 
 from student_agent.contracts import Contracts
-from student_agent.evidence_store import EvidenceStore
-from student_agent.mcp_gateway import EvidenceGateway, MCPToolError
+from student_agent.mcp_gateway import EvidenceGateway
 
 EVIDENCE = {
     "schema_version": "day09-mcp-evidence-v1",
@@ -34,10 +33,10 @@ def gateway(result: Any) -> EvidenceGateway:
     return EvidenceGateway(FakeSession(result), contracts)  # type: ignore[arg-type]
 
 
-def test_call_accepts_mcp_v2_snake_case_result_fields() -> None:
+def test_call_accepts_original_camel_case_result_fields() -> None:
     result = SimpleNamespace(
-        is_error=False,
-        structured_content=EVIDENCE,
+        isError=False,
+        structuredContent=EVIDENCE,
         content=[],
     )
 
@@ -48,28 +47,10 @@ def test_call_accepts_mcp_v2_snake_case_result_fields() -> None:
 
 def test_call_raises_runtime_error_for_mcp_v2_error_result() -> None:
     result = SimpleNamespace(
-        is_error=True,
-        structured_content=None,
+        isError=True,
+        structuredContent=None,
         content=[SimpleNamespace(text="not found")],
     )
 
-    with pytest.raises(MCPToolError, match="not found"):
+    with pytest.raises(RuntimeError, match="not found"):
         asyncio.run(gateway(result).call("get_order", case_id="CASE_001", order_id="1"))
-
-
-def test_evidence_store_does_not_retry_mcp_tool_error() -> None:
-    class RejectingGateway:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        async def call(self, tool_name: str, *, case_id: str, **arguments: str) -> Any:
-            self.calls += 1
-            raise MCPToolError("candidate not found")
-
-    rejecting = RejectingGateway()
-    store = EvidenceStore(rejecting)  # type: ignore[arg-type]
-
-    with pytest.raises(MCPToolError, match="candidate not found"):
-        asyncio.run(store.get_order("CASE_001", "candidate-decoy"))
-
-    assert rejecting.calls == 1

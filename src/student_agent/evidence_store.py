@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Any
 
-from .mcp_gateway import EvidenceGateway, MCPToolError
+from .mcp_gateway import EvidenceGateway
 from .trace import TraceWriter
 
 logger = logging.getLogger(__name__)
@@ -91,9 +91,6 @@ class EvidenceStore:
 
                 return evidence
 
-            except MCPToolError:
-                logger.info("MCP %s rejected request for case %s; not retrying", tool_name, case_id)
-                raise
             except Exception as exc:
                 last_exception = exc
                 if attempt <= max_retries:
