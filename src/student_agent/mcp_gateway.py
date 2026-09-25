@@ -12,6 +12,10 @@ from mcp.client.streamable_http import streamable_http_client
 from .contracts import Contracts
 
 
+class MCPToolError(RuntimeError):
+    """A deterministic server-side tool rejection that must not be retried."""
+
+
 class EvidenceGateway:
     def __init__(self, session: ClientSession, contracts: Contracts) -> None:
         self._session = session
@@ -29,7 +33,7 @@ class EvidenceGateway:
             message = " ".join(
                 block.text for block in result.content if getattr(block, "text", None)
             )
-            raise RuntimeError(f"MCP tool {tool_name} failed: {message or 'unknown error'}")
+            raise MCPToolError(f"MCP tool {tool_name} failed: {message or 'unknown error'}")
         evidence = getattr(result, "structuredContent", None)
         if evidence is None:
             evidence = getattr(result, "structured_content", None)
