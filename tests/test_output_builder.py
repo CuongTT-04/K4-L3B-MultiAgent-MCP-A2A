@@ -172,6 +172,64 @@ def test_build_output_uses_llm_choice_but_caps_confidence() -> None:
     )
 
 
+POLICY = {
+    "rules": {
+        "refund_pending": {
+            "case_status": "needs_investigation",
+            "recommended_action": "monitor_refund",
+            "refund_brl": 0.0,
+            "responsible_parties": [{"party_id": None, "party_type": "payment_provider"}],
+        },
+        "late_delivery_logistics": {
+            "case_status": "action_required",
+            "recommended_action": "refund_freight",
+            "refund_brl": 16.0,
+            "responsible_parties": [{"party_id": None, "party_type": "logistics_provider"}],
+        },
+    }
+}
+
+
+def test_financials_follow_the_issue_chosen_by_synthesis() -> None:
+    findings, _ = payment_result()
+    findings.policy = POLICY
+    output = asyncio.run(
+        build_output(
+            CASE,
+            entity_result(),
+            shipment_result(),
+            findings,
+            findings.decide("refund_pending"),
+            synthesizer=FakeSynthesizer(),
+        )
+    )
+
+    contracts().validate_output(output, "test output")
+    assert output["assessment"]["primary_issue"] == "late_delivery_logistics"
+    assert output["assessment"]["case_status"] == "action_required"
+    assert output["financial_resolution"]["recommended_refund_brl"] == 16.0
+    assert output["financial_resolution"]["refund_lines"][0]["reason_code"] == (
+        "late_delivery_logistics"
+    )
+    assert output["resolution_actions"] == ["refund_freight"]
+    assert output["claim_assessments"][1]["verdict"] == "partially_supported"
+
+
+def test_policy_status_is_used_without_synthesis() -> None:
+    findings, _ = payment_result()
+    findings.policy = POLICY
+    output = asyncio.run(
+        build_output(
+            CASE, entity_result(), shipment_result(), findings, findings.decide("refund_pending")
+        )
+    )
+
+    assert output["assessment"]["primary_issue"] == "refund_pending"
+    assert output["assessment"]["case_status"] == "needs_investigation"
+    assert output["resolution_actions"] == ["monitor_refund"]
+    assert output["claim_assessments"][1]["verdict"] == "unsupported"
+
+
 def test_build_output_is_conservative_when_entity_is_not_resolved() -> None:
     findings, decision = payment_result()
     output = asyncio.run(

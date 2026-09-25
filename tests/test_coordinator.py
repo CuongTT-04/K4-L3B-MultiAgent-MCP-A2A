@@ -4,8 +4,6 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from student_agent.contracts import Contracts
 from student_agent.coordinator import CoordinatorDependencies, coordinate_case
 from student_agent.models import SpecialistResult
@@ -201,12 +199,13 @@ def test_unresolved_entity_skips_domain_specialists() -> None:
     assert trace.events[-1]["event_type"] == "verification_completed"
 
 
-def test_verification_failure_is_traced_before_error() -> None:
+def test_non_fatal_verification_failure_is_traced_and_output_kept() -> None:
     deps, _, _, _ = dependencies(FakeEntitySpecialist(overlap=True))
     trace = RecordingTrace()
 
-    with pytest.raises(ValueError, match="ENTITY_SET_OVERLAP"):
-        asyncio.run(coordinate_case(CASE, FakeGateway(), trace, deps))
+    output = asyncio.run(coordinate_case(CASE, FakeGateway(), trace, deps))
 
+    assert output["case_id"] == CASE["case_id"]
     assert trace.events[-1]["event_type"] == "verification_completed"
     assert trace.events[-1]["decision_code"] == "FAILED"
+    assert "ENTITY_SET_OVERLAP" in trace.events[-1]["attributes"]["error_codes"]

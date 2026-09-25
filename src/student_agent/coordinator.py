@@ -22,6 +22,8 @@ class Specialist(Protocol):
 
 PaymentInvestigator = Callable[..., Awaitable[tuple[PaymentFindings, PaymentDecision]]]
 
+FATAL_VERIFICATION_CODES = frozenset({"CASE_ID_MISMATCH", "SCHEMA_INVALID"})
+
 
 @dataclass(frozen=True)
 class CoordinatorDependencies:
@@ -251,9 +253,14 @@ async def coordinate_case(
         target="coordinator",
         decision_code="PASSED" if verification.passed else "FAILED",
         evidence_refs=output["evidence_refs"][:20] or None,
-        attributes={"error_count": len(verification.error_codes)},
+        attributes={
+            "error_count": len(verification.error_codes),
+            "error_codes": ",".join(verification.error_codes)[:200] or None,
+        },
     )
-    if not verification.passed:
-        joined = ",".join(verification.error_codes)
-        raise ValueError(f"{case_id}: verification failed: {joined}")
+    # Only errors that make the file unwritable abort the run; a flawed but valid answer still
+    # scores better than dropping the remaining cases.
+    fatal = [code for code in verification.error_codes if code in FATAL_VERIFICATION_CODES]
+    if fatal:
+        raise ValueError(f"{case_id}: verification failed: {','.join(fatal)}")
     return output

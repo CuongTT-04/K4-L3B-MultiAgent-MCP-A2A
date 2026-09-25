@@ -111,7 +111,13 @@ def _claim_assessments(
             confidence = float(shipment.data.get("confidence", 0.4))
         elif topic == "requested_full_refund":
             amount = decision.financial_resolution.get("recommended_refund_brl") or 0.0
-            verdict = "supported" if amount > 0 else "unsupported"
+            captured = payment.facts.captured_total_brl or 0.0
+            if amount <= 0:
+                verdict = "unsupported"
+            elif amount >= captured - 0.01:
+                verdict = "supported"
+            else:
+                verdict = "partially_supported"
             refs = payment_refs
             confidence = _payment_confidence(payment)
         elif topic == "unsupported_claim":
@@ -211,6 +217,10 @@ async def build_output(
         synthesis.ranked_cause_codes,
     )
 
+    # Money, actions and parties must follow the issue finally chosen, not the pre-synthesis one.
+    if resolved and synthesis.primary_issue != payment_decision.issue:
+        payment_decision = payment.decide(synthesis.primary_issue)
+
     financial = dict(payment_decision.financial_resolution)
     if not resolved:
         synthesis = SynthesisDecision(
@@ -232,6 +242,8 @@ async def build_output(
 
     recommended_refund = financial.get("recommended_refund_brl") or 0.0
     case_status = synthesis.case_status
+    if resolved and not unresolved and payment_decision.policy_applied:
+        case_status = payment_decision.case_status
     if recommended_refund > 0:
         case_status = "action_required"
     elif synthesis.primary_issue in ("valid_split_payment", "unsupported_claim"):
