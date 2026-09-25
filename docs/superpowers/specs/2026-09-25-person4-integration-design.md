@@ -36,9 +36,10 @@ would duplicate teammates' work and create a later refactor.
 
 ### Normalized contracts
 
-`src/student_agent/coordinator.py` defines the coordinator-facing result contracts. Each result
-contains domain data, immutable evidence references, reported conflicts, confidence, and
-warnings. Coordinator code depends only on these contracts.
+`src/student_agent/integration_models.py` defines the coordinator-facing result contracts. Each
+result contains domain data, immutable evidence references, reported conflicts, confidence, and
+warnings. Keeping these contracts outside `coordinator.py` prevents circular imports when the
+coordinator calls the conflict resolver, output builder, and verifier.
 
 The three inputs are:
 
