@@ -145,3 +145,38 @@ def test_openrouter_rejects_unknown_cause_code() -> None:
                 confidence_ceiling=0.8,
             )
         )
+
+
+def test_prompt_excludes_customer_claims() -> None:
+    request = RecordingRequest(
+        {
+            "primary_issue": "refund_failed",
+            "secondary_issues": [],
+            "case_status": "action_required",
+            "confidence": 0.9,
+            "ranked_cause_codes": ["REFUND_PROCESSING_FAILED"],
+        }
+    )
+    synthesizer = OpenRouterSynthesizer("sk-or-test", request=request)
+    asyncio.run(
+        synthesizer.synthesize(
+            case={
+                "case_id": "L3B_CASE_001",
+                "customer_request": {"claims": [{"claim_id": "c", "topic": "duplicate_charge"}]},
+            },
+            facts={"payment_issues": ["refund_failed"]},
+            allowed_issues=["refund_failed"],
+            allowed_cause_codes=["REFUND_PROCESSING_FAILED"],
+            confidence_ceiling=0.9,
+        )
+    )
+    user_message = request.calls[0][2]["messages"][1]["content"]
+    assert "duplicate_charge" not in user_message
+    assert "customer_claims" not in user_message
+
+
+def test_transport_errors_become_runtime_errors() -> None:
+    from student_agent.llm_synthesis import _post_json
+
+    with pytest.raises(RuntimeError, match="OpenRouter request failed"):
+        asyncio.run(_post_json("http://127.0.0.1:9/unreachable", {}, {}))

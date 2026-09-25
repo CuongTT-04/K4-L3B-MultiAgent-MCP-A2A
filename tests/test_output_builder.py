@@ -130,7 +130,7 @@ def test_build_output_combines_real_specialist_contracts() -> None:
         "primary_issue": "refund_pending",
         "secondary_issues": ["late_delivery_logistics"],
         "case_status": "action_required",
-        "confidence": 0.85,
+        "confidence": 0.7,
     }
     assert output["evidence_refs"] == [ENTITY_EV, SHIPMENT_EV, PAYMENT_EV, POLICY_EV]
     assert output["root_cause_analysis"]["ranked_causes"] == [
@@ -166,7 +166,7 @@ def test_build_output_uses_llm_choice_but_caps_confidence() -> None:
     )
 
     assert output["assessment"]["primary_issue"] == "late_delivery_logistics"
-    assert output["assessment"]["confidence"] == 0.85
+    assert output["assessment"]["confidence"] == 0.7
     assert output["root_cause_analysis"]["ranked_causes"][0]["cause_code"] == (
         "LOGISTICS_TRANSIT_DELAY"
     )

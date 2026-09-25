@@ -18,6 +18,8 @@ _SHIPMENT_ISSUES = {
     "logistics_delay": "late_delivery_logistics",
     "lost": "late_delivery_logistics",
 }
+AMBIGUOUS_ISSUE_CONFIDENCE = 0.7
+
 _ISSUE_CAUSES = {
     "canceled_order_paid": "ORDER_CANCELED_AFTER_CAPTURE",
     "unavailable_order_paid": "ORDER_UNAVAILABLE_AFTER_CAPTURE",
@@ -189,6 +191,10 @@ async def build_output(
     )
     if unresolved:
         confidence_ceiling = min(confidence_ceiling, 0.6)
+    if len(issues) > 1:
+        # Calibration is 1 - (correct - confidence)^2: picking among several evidence-backed
+        # issues is less certain than a single supported one.
+        confidence_ceiling = min(confidence_ceiling, AMBIGUOUS_ISSUE_CONFIDENCE)
 
     synthesis = _fallback_synthesis(issues, causes, payment_decision, confidence_ceiling)
     if synthesizer is not None and resolved:
